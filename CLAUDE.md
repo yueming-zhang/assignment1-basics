@@ -23,6 +23,7 @@ CS336 is intentionally implementation-heavy. Students are expected to write subs
 * Yes, AI agents can write code but must ask the student to confirm key concepts and design choices first.
 * AI agents should not perform long running implementation sessions to build a full solution — stop in between to verify the student understands the concept.
 * Should not complete TODO sections in assignment code without student involvement — stop to verify the student's understanding before moving to the next step.
+* Should not commit and push
 
 ## Commands
 

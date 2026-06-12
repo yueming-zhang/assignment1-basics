@@ -5,6 +5,7 @@ from multiprocessing import Pool
 from typing import BinaryIO
 
 import regex
+from tqdm import tqdm
 
 PAT = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
 
@@ -102,7 +103,7 @@ def train_bpe(
     merges: list[tuple[bytes, bytes]] = []
     next_id = max(vocab) + 1
 
-    for _ in range(num_merges):
+    for _ in tqdm(range(num_merges), desc="Merges", unit="merge"):
         if not pair_counts:
             break
 
@@ -154,3 +155,42 @@ def train_bpe(
             word_counts[new_word_tuple] = word_counts.get(new_word_tuple, 0) + count
 
     return vocab, merges
+
+
+if __name__ == "__main__":
+    import json
+    import time
+    from pathlib import Path
+
+    import multiprocessing
+
+    INPUT_PATH = Path("data/owt_train.txt")
+    VOCAB_SIZE = 32000
+    SPECIAL_TOKENS = ["<|endoftext|>"]
+    OUT_DIR = Path("profile/owt_bpe_output")
+    OUT_DIR.mkdir(parents=True, exist_ok=True)
+    NUM_PROCESSES = multiprocessing.cpu_count()
+
+    print(f"Input:      {INPUT_PATH.resolve()} ({INPUT_PATH.stat().st_size / 1e6:.1f} MB)")
+    print(f"Vocab size: {VOCAB_SIZE}")
+    print(f"Output dir: {OUT_DIR.resolve()}")
+    print(f"Processes:  {NUM_PROCESSES}")
+    print()
+
+    start = time.time()
+    vocab, merges = train_bpe(INPUT_PATH, VOCAB_SIZE, SPECIAL_TOKENS, num_processes=NUM_PROCESSES)
+    elapsed = time.time() - start
+    print(f"\nDone in {elapsed:.1f}s ({elapsed/60:.1f} min). Vocab: {len(vocab)}, Merges: {len(merges)}")
+
+    vocab_path = OUT_DIR / "vocab.json"
+    with open(vocab_path, "w") as f:
+        json.dump({k: v.decode("latin-1") for k, v in vocab.items()}, f, ensure_ascii=False, indent=2)
+    print(f"Vocab saved to {vocab_path}")
+
+    merges_path = OUT_DIR / "merges.json"
+    with open(merges_path, "w") as f:
+        json.dump([[a.decode("latin-1"), b.decode("latin-1")] for a, b in merges], f, ensure_ascii=False, indent=2)
+    print(f"Merges saved to {merges_path}")
+
+    longest = max(vocab.values(), key=len)
+    print(f"\nLongest token ({len(longest)} bytes): {longest}")
