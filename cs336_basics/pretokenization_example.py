@@ -50,7 +50,9 @@ def find_chunk_boundaries(
 
 
 ## Usage
-with open(..., "rb") as f:
+from pathlib import Path
+data_folder = Path(__file__).parents[1] / "data"
+with open(data_folder / "TinyStoriesV2-GPT4-train.txt", "rb") as f:
     num_processes = 4
     boundaries = find_chunk_boundaries(f, num_processes, b"<|endoftext|>")
 
