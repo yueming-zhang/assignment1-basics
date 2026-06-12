@@ -164,3 +164,6 @@ cython_debug/
 
 # Dataset files (large, downloaded separately)
 data/
+
+# Generated BPE tokenizer artifacts (regenerable via train_bpe.py)
+profile/owt_bpe_output/
