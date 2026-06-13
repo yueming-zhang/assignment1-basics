@@ -135,35 +135,21 @@ def part_c(owt_tok: Tokenizer):
 # ---------------------------------------------------------------------------
 # Part (d): encode full datasets to uint16 numpy arrays
 # ---------------------------------------------------------------------------
-def encode_file_to_uint16(tokenizer: Tokenizer, src: Path, dst: Path,
-                          batch: int = 1 << 20):
-    """Stream-encode src, collect into a uint16 array, save as .npy.
+def encode_file_to_uint16(tokenizer: Tokenizer, src: Path, dst: Path):
+    """Parallel-encode src to a uint16 .npy via Tokenizer.encode_file.
 
-    Token IDs are flushed into uint16 numpy chunks every `batch` tokens instead
-    of accumulating in a Python list. A list of boxed ints costs ~28 B/token
-    (~80+ GB for the 11.9 GB OWT corpus, which OOM-kills the WSL VM); the chunked
-    form keeps only one batch of Python ints alive at a time, and the final array
-    is 2 B/token.
+    The file is split at <|endoftext|> boundaries into many ~16 MB chunks and
+    tokenized across all cores; each worker writes a uint16 shard and the main
+    process memmap-concatenates them, so peak RAM stays ~one chunk (the 11.9 GB
+    OWT corpus would otherwise OOM the WSL VM as an ~80 GB Python int list).
     """
     print(f"  Encoding {src} -> {dst} ...")
     start = time.perf_counter()
 
-    chunks: list[np.ndarray] = []
-    buf: list[int] = []
-    with open(src, encoding="utf-8") as f:
-        for tid in tokenizer.encode_iterable(f):
-            buf.append(tid)
-            if len(buf) >= batch:
-                chunks.append(np.array(buf, dtype=np.uint16))
-                buf.clear()
-    if buf:
-        chunks.append(np.array(buf, dtype=np.uint16))
-
-    arr = np.concatenate(chunks) if chunks else np.empty(0, dtype=np.uint16)
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    np.save(dst, arr)
+    tokenizer.encode_file(src, dst, dtype=np.uint16)
 
     elapsed = time.perf_counter() - start
+    arr = np.load(dst, mmap_mode="r")
     print(f"    {len(arr):,} tokens, saved {dst.stat().st_size / 1024**2:.1f} MB in {elapsed:.1f}s")
 
 
