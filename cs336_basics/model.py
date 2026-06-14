@@ -354,6 +354,7 @@ class TransformerLM(nn.Module):
         dtype: torch.dtype | None = None,
     ):
         super().__init__()
+        self.context_length = context_length
         rope = RotaryPositionalEmbedding(
             rope_theta, d_model // num_heads, context_length, device=device
         )
