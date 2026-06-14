@@ -30,7 +30,6 @@ def parse_args() -> argparse.Namespace:
     # Data: 1D token-id arrays on disk, loaded with np.memmap.
     p.add_argument("--train-data", type=str, required=True, help="Path to .npy token ids")
     p.add_argument("--val-data", type=str, default=None, help="Path to validation .npy token ids")
-    p.add_argument("--data-dtype", type=str, default="uint16", help="dtype of the token-id arrays")
 
     # Model.
     p.add_argument("--vocab-size", type=int, required=True)
@@ -73,9 +72,13 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
-def load_tokens(path: str, dtype: str) -> np.memmap:
-    """Memory-map a 1D token-id array so we never load the whole dataset into RAM."""
-    return np.memmap(path, dtype=np.dtype(dtype), mode="r")
+def load_tokens(path: str) -> np.ndarray:
+    """Memory-map a 1D .npy token-id array so we never load it all into RAM.
+
+    np.load(mmap_mode="r") parses the .npy header (unlike np.memmap) and returns
+    a read-only memory-mapped array, matching files written by Tokenizer.encode_file.
+    """
+    return np.load(path, mmap_mode="r")
 
 
 @torch.no_grad()
@@ -96,8 +99,8 @@ def main() -> None:
     torch.manual_seed(args.seed)
     cosine_cycle_iters = args.cosine_cycle_iters or args.max_iters
 
-    train_data = load_tokens(args.train_data, args.data_dtype)
-    val_data = load_tokens(args.val_data, args.data_dtype) if args.val_data else None
+    train_data = load_tokens(args.train_data)
+    val_data = load_tokens(args.val_data) if args.val_data else None
 
     model = TransformerLM(
         vocab_size=args.vocab_size,

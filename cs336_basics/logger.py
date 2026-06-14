@@ -22,9 +22,20 @@ class ExperimentLogger:
         run_name: str | None = None,
         config: dict[str, Any] | None = None,
     ):
-        run_name = run_name or time.strftime("run_%Y%m%d_%H%M%S")
-        self.run_dir = Path(log_dir) / run_name
+        # Each run gets its own timestamped subdir under the run name, so
+        # re-running the same name never clobbers a previous run's files:
+        #   <log_dir>/<run_name>/<YYYYMMDD_HHMMSS>/{config.json,metrics.jsonl}
+        run_name = run_name or "run"
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        run_root = Path(log_dir) / run_name
+        self.run_dir = run_root / timestamp
         self.run_dir.mkdir(parents=True, exist_ok=True)
+
+        # Point <run_name>/latest at this run so downstream tools (plot_curves,
+        # generate) can use a stable path instead of the timestamp.
+        latest = run_root / "latest"
+        latest.unlink(missing_ok=True)
+        latest.symlink_to(timestamp)
 
         self.metrics_path = self.run_dir / "metrics.jsonl"
         self._metrics_file = self.metrics_path.open("a")
@@ -36,8 +47,10 @@ class ExperimentLogger:
 
     def log(self, step: int, metrics: dict[str, float], to_console: bool = True) -> None:
         """Append one record stamping `metrics` with the step and elapsed seconds."""
-        wall_clock = time.time() - self._start_time
-        record = {"step": step, "wall_clock_time": wall_clock, **metrics}
+        now = time.time()
+        wall_clock = now - self._start_time
+        # Absolute timestamp too, so plots can split/label appended runs by time.
+        record = {"step": step, "wall_clock_time": wall_clock, "timestamp": now, **metrics}
 
         self._metrics_file.write(json.dumps(record) + "\n")
         self._metrics_file.flush()

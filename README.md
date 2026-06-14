@@ -48,3 +48,119 @@ gunzip owt_valid.txt.gz
 cd ..
 ```
 
+## Training and generation
+
+The full pipeline is: **train a BPE tokenizer → tokenize the corpus to `.npy` →
+train the model → generate text**. Steps 1–2 only need to be done once per dataset.
+
+### 0. Prerequisite: tokenizer + tokenized data
+
+Train a BPE tokenizer (TinyStories, 10K vocab) and encode the splits to
+memory-mappable `uint16` `.npy` token arrays:
+
+```sh
+# Train the BPE tokenizer -> scripts/ts_bpe_output/{vocab.json,merges.json}
+uv run python scripts/train_tokenizer.py \
+    --input data/TinyStoriesV2-GPT4-train.txt \
+    --vocab-size 10000 --out-dir scripts/ts_bpe_output
+
+# Encode train/valid text -> .npy token arrays
+uv run scripts/tokenize_dataset.py \
+    --vocab scripts/ts_bpe_output/vocab.json \
+    --merges scripts/ts_bpe_output/merges.json \
+    --input data/TinyStoriesV2-GPT4-train.txt --output data/tokenized/ts_train.npy
+uv run scripts/tokenize_dataset.py \
+    --vocab scripts/ts_bpe_output/vocab.json \
+    --merges scripts/ts_bpe_output/merges.json \
+    --input data/TinyStoriesV2-GPT4-valid.txt --output data/tokenized/ts_valid.npy
+```
+
+### 1. Train on TinyStories (example, ~17M params)
+
+```sh
+uv run scripts/train.py \
+    --train-data data/tokenized/ts_train.npy --val-data data/tokenized/ts_valid.npy \
+    --vocab-size 10000 --context-length 256 \
+    --d-model 512 --num-layers 4 --num-heads 16 --d-ff 1344 \
+    --batch-size 64 --max-iters 5000 --lr 3e-4 --warmup-iters 200 \
+    --device cuda --run-name ts_baseline \
+    --checkpoint-path checkpoints/ts_baseline.pt
+```
+
+Each run is logged to its own timestamped dir,
+`experiments/logs/ts_baseline/<timestamp>/{config.json,metrics.jsonl}`, and a
+`latest` symlink always points at the most recent run. Per-step metrics
+(train/val loss, lr) go to `metrics.jsonl` against gradient steps and wall-clock
+time. Plot the latest run with:
+
+```sh
+uv run --with matplotlib python scripts/plot_curves.py \
+    experiments/logs/ts_baseline/latest --metric val_loss \
+    --out experiments/ts_val_loss.png
+```
+
+To compare several runs, pass multiple run dirs (e.g.
+`experiments/logs/ts_baseline/*/`).
+
+### 2. Train on a larger dataset (OpenWebText)
+
+Use a larger vocab (e.g. 32K) and train a bigger/longer run. Same scripts as
+step 0, just pointed at OWT with a larger vocab:
+
+```sh
+# Train the BPE tokenizer -> scripts/owt_bpe_output/{vocab.json,merges.json}
+uv run python scripts/train_tokenizer.py \
+    --input data/owt_train.txt \
+    --vocab-size 32000 --out-dir scripts/owt_bpe_output
+```
+
+Then tokenize the corpus and train:
+
+```sh
+# Tokenize OWT splits -> .npy
+uv run scripts/tokenize_dataset.py \
+    --vocab scripts/owt_bpe_output/vocab.json \
+    --merges scripts/owt_bpe_output/merges.json \
+    --input data/owt_train.txt --output data/tokenized/owt_train.npy
+uv run scripts/tokenize_dataset.py \
+    --vocab scripts/owt_bpe_output/vocab.json \
+    --merges scripts/owt_bpe_output/merges.json \
+    --input data/owt_valid.txt --output data/tokenized/owt_valid.npy
+
+# Train (longer context, more layers/steps)
+uv run scripts/train.py \
+    --train-data data/tokenized/owt_train.npy --val-data data/tokenized/owt_valid.npy \
+    --vocab-size 32000 --context-length 512 \
+    --d-model 768 --num-layers 12 --num-heads 12 --d-ff 2048 \
+    --batch-size 32 --max-iters 50000 --lr 3e-4 --warmup-iters 1000 \
+    --device cuda --run-name owt_baseline \
+    --checkpoint-path checkpoints/owt_baseline.pt
+```
+
+Plot the curves (same as step 1, pointed at the `owt_baseline` run):
+
+```sh
+uv run --with matplotlib python scripts/plot_curves.py \
+    experiments/logs/owt_baseline/latest --metric val_loss \
+    --out experiments/owt_val_loss.png
+```
+
+Tune `--batch-size`, `--max-iters`, and model dims to your GPU memory/budget.
+Resume an interrupted run with `--resume checkpoints/<name>.pt`.
+
+### 3. Generate from a trained model
+
+Reconstructs the model from the run's `config.json`, loads the checkpoint and
+tokenizer, and samples a completion. Supports temperature scaling and top-p
+(nucleus) sampling (use `--temperature 0` for greedy decoding):
+
+```sh
+uv run scripts/generate.py \
+    --config experiments/logs/ts_baseline/latest/config.json \
+    --checkpoint checkpoints/ts_baseline.pt \
+    --vocab scripts/ts_bpe_output/vocab.json \
+    --merges scripts/ts_bpe_output/merges.json \
+    --prompt "Once upon a time" \
+    --max-new-tokens 256 --temperature 0.8 --top-p 0.95 --device cuda
+```
+

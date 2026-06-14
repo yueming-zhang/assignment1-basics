@@ -167,3 +167,6 @@ data/
 
 # Generated BPE tokenizer artifacts (regenerable via train_bpe.py)
 profile/owt_bpe_output/
+
+# Model checkpoints (large, regenerable by training)
+checkpoints/
