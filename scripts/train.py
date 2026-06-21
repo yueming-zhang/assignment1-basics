@@ -23,6 +23,10 @@ from cs336_basics.model import TransformerLM, cross_entropy
 from cs336_basics.optimizer import AdamW, get_lr_cosine_schedule, gradient_clipping
 from cs336_basics.serialization import load_checkpoint, save_checkpoint
 
+# Autocast compute dtypes. Params stay fp32 (master weights); autocast casts
+# per-op at runtime. RMSNorm upcasts internally and we keep the loss in fp32.
+DTYPES = {"fp32": torch.float32, "bf16": torch.bfloat16, "fp16": torch.float16}
+
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Train a Transformer LM")
@@ -57,6 +61,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--batch-size", type=int, default=32)
     p.add_argument("--max-iters", type=int, default=5000)
     p.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
+    p.add_argument("--dtype", type=str, default="bf16", choices=list(DTYPES),
+                   help="Autocast compute dtype (params stay fp32). fp32 disables autocast.")
     p.add_argument("--seed", type=int, default=0)
 
     # Logging / checkpointing.
@@ -82,14 +88,16 @@ def load_tokens(path: str) -> np.ndarray:
 
 
 @torch.no_grad()
-def estimate_loss(model, dataset, batch_size, context_length, device, eval_iters) -> float:
+def estimate_loss(model, dataset, batch_size, context_length, device, eval_iters, amp_ctx) -> float:
     """Average cross-entropy over `eval_iters` random batches (model in eval mode)."""
     model.eval()
     losses = torch.zeros(eval_iters)
     for i in range(eval_iters):
         x, y = get_batch(dataset, batch_size, context_length, device)
-        logits = model(x)
-        losses[i] = cross_entropy(logits.view(-1, logits.size(-1)), y.view(-1)).item()
+        with amp_ctx:
+            logits = model(x)
+        # Loss in fp32: upcast logits outside autocast for stable softmax/logsumexp.
+        losses[i] = cross_entropy(logits.float().view(-1, logits.size(-1)), y.view(-1)).item()
     model.train()
     return losses.mean().item()
 
@@ -121,13 +129,20 @@ def main() -> None:
         weight_decay=args.weight_decay,
     )
 
+    # Mixed precision: autocast forward to args.dtype (no-op for fp32). GradScaler
+    # is only needed for fp16 (bf16 has fp32's exponent range -> no loss scaling).
+    device_type = "cuda" if args.device.startswith("cuda") else "cpu"
+    amp_dtype = DTYPES[args.dtype]
+    amp_ctx = torch.autocast(device_type=device_type, dtype=amp_dtype, enabled=args.dtype != "fp32")
+    scaler = torch.amp.GradScaler(device_type, enabled=args.dtype == "fp16")
+
     start_iter = 0
     if args.resume:
         start_iter = load_checkpoint(args.resume, model, optimizer)
         print(f"Resumed from {args.resume} at iteration {start_iter}")
 
     n_params = sum(p.numel() for p in model.parameters())
-    print(f"Model has {n_params/1e6:.2f}M parameters; training on {args.device}")
+    print(f"Model has {n_params/1e6:.2f}M parameters; training on {args.device} ({args.dtype})")
 
     logger = ExperimentLogger(args.log_dir, args.run_name, config=vars(args))
     print(f"Logging to {logger.run_dir}")
@@ -143,21 +158,26 @@ def main() -> None:
 
         # One optimization step.
         x, y = get_batch(train_data, args.batch_size, args.context_length, args.device)
-        logits = model(x)
-        loss = cross_entropy(logits.view(-1, logits.size(-1)), y.view(-1))
+        with amp_ctx:
+            logits = model(x)
+        # Loss in fp32: upcast logits outside autocast for stable softmax/logsumexp.
+        loss = cross_entropy(logits.float().view(-1, logits.size(-1)), y.view(-1))
 
         optimizer.zero_grad()
-        loss.backward()
+        scaler.scale(loss).backward()
         if args.grad_clip > 0:
+            scaler.unscale_(optimizer)  # unscale before clipping on the real grads
             gradient_clipping(model.parameters(), args.grad_clip)
-        optimizer.step()
+        scaler.step(optimizer)
+        scaler.update()
 
         if it % args.log_interval == 0:
             logger.log(it, {"train_loss": loss.item(), "lr": lr})
 
         if val_data is not None and args.eval_interval and it % args.eval_interval == 0 and it > 0:
             val_loss = estimate_loss(
-                model, val_data, args.batch_size, args.context_length, args.device, args.eval_iters
+                model, val_data, args.batch_size, args.context_length, args.device,
+                args.eval_iters, amp_ctx
             )
             logger.log(it, {"val_loss": val_loss})
 

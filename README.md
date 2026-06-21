@@ -83,9 +83,13 @@ uv run scripts/train.py \
     --vocab-size 10000 --context-length 256 \
     --d-model 512 --num-layers 4 --num-heads 16 --d-ff 1344 \
     --batch-size 64 --max-iters 5000 --lr 3e-4 --warmup-iters 200 \
-    --device cuda --run-name ts_baseline \
+    --device cuda --dtype bf16 --run-name ts_baseline \
     --checkpoint-path checkpoints/ts_baseline.pt
 ```
+
+`--dtype` selects the autocast compute dtype (`bf16` default, or `fp16`/`fp32`).
+Model params stay fp32, and RMSNorm + the loss are computed in fp32 regardless;
+`fp32` disables autocast entirely. Use distinct `--run-name`s to compare dtypes.
 
 Each run is logged to its own timestamped dir,
 `experiments/logs/ts_baseline/<timestamp>/{config.json,metrics.jsonl}`, and a
@@ -133,7 +137,7 @@ uv run scripts/train.py \
     --vocab-size 32000 --context-length 512 \
     --d-model 768 --num-layers 12 --num-heads 12 --d-ff 2048 \
     --batch-size 32 --max-iters 50000 --lr 3e-4 --warmup-iters 1000 \
-    --device cuda --run-name owt_baseline \
+    --device cuda --dtype bf16 --run-name owt_baseline \
     --checkpoint-path checkpoints/owt_baseline.pt
 ```
 

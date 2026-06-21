@@ -1,6 +1,7 @@
 """Neural-network primitives built from scratch for the CS336 Transformer."""
 
 import torch
+import torch.nn.functional as F
 from torch import nn
 from einops import einsum, rearrange
 from jaxtyping import Bool, Float, Int
@@ -292,10 +293,14 @@ class MultiHeadSelfAttention(nn.Module):
             Q = self.rope(Q, pos)
             K = self.rope(K, pos)
 
-        # Causal mask: query i may attend to key j only if j <= i.
-        mask = torch.tril(torch.ones(seq, seq, dtype=torch.bool, device=x.device))
-
-        attn = scaled_dot_product_attention(Q, K, V, mask)  # (... h seq d_k)
+        # Use PyTorch's fused scaled-dot-product attention, which dispatches to a
+        # FlashAttention-2 kernel on Ampere+ GPUs with fp16/bf16 inputs. It never
+        # materializes the (seq, seq) score matrix (O(seq) memory instead of
+        # O(seq²)) and is faster. `is_causal=True` applies the causal mask inside
+        # the kernel, so we don't build a mask tensor. RoPE is already applied to
+        # Q/K above, so the rotated tensors flow straight in. (The standalone
+        # scaled_dot_product_attention above is kept for the unit tests.)
+        attn = F.scaled_dot_product_attention(Q, K, V, is_causal=True)  # (... h seq d_k)
         attn = rearrange(attn, "... h seq d -> ... seq (h d)")
         return self.output_proj(attn)
 
